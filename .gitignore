@@ -212,5 +212,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Documents
+docs/
+
 # Streamlit
 .streamlit/secrets.toml

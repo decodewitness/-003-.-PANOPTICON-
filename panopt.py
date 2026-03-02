@@ -1,9 +1,11 @@
+# panopt.py
+
 #!/usr/bin/env python3
 """
 UROPS PANOPT | Home
 - Minimal, standard-library-only web server
-- Placeholder API-feed endpoints (FEED 2..6) you can replace later
-- Frontend polls feeds periodically and renders them into bordered panels
+- FEED 1: CesiumJS + Google Photorealistic 3D Tiles (Map Tiles API key required)
+- Reads GMP_MAP_TILES_API_KEY from .env if present (no external deps)
 
 Run:
   python panopt.py
@@ -13,56 +15,62 @@ Then open:
 
 from __future__ import annotations
 
-### for web processing and serving HTML ###
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-### for the main page w/ streams ###
 from pages.home import HTML_PAGE
 
-### (PORT) AND (HOSTNAME) ###
 HOST = "127.0.0.1"
 PORT = 8080
 
-### returns time now ###
+
 def iso_utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-### minimal POST handler ###
-def do_POST(self):
-    parsed = urlparse(self.path)
-    path = parsed.path
+def load_dotenv(path: str = ".env", override: bool = False) -> bool:
+    """
+    Minimal .env loader (standard library only).
+    - Supports KEY=VALUE lines
+    - Ignores blank lines and comments (# ...)
+    - Strips optional surrounding quotes
+    Returns True if file was found and parsed.
+    """
+    if not os.path.exists(path):
+        return False
 
-    if path == "/api/action":
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length) if length > 0 else b"{}"
-            data = json.loads(raw.decode("utf-8") or "{}")
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
 
-            action = data.get("action")
-            payload = data.get("payload")
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip()
 
-            # TODO: route actions here
-            body = json.dumps({
-                "ok": True,
-                "received": {"action": action, "payload": payload},
-            }, indent=2).encode("utf-8")
-            self._send(200, body, "application/json; charset=utf-8")
-        except Exception as e:
-            body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
-            self._send(400, body, "application/json; charset=utf-8")
-        return
+            # Strip inline comments like: KEY=value # comment
+            if " #" in v:
+                v = v.split(" #", 1)[0].rstrip()
 
-    self._send(404, b"Not Found", "text/plain; charset=utf-8")
+            # Remove surrounding quotes
+            if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+                v = v[1:-1]
+
+            if not k:
+                continue
+            if override or (k not in os.environ):
+                os.environ[k] = v
+
+    return True
 
 
-### builds a placeholder feeed window ###
 def build_placeholder_feed(n: int) -> dict:
-    # Replace this function with real API calls + categorization.
-    # Keep the output shape stable so the frontend doesn't need rewriting.
     base_items = [
         f"Item {n}.1 (example)",
         f"Item {n}.2 (example)",
@@ -72,6 +80,7 @@ def build_placeholder_feed(n: int) -> dict:
         "feed": n,
         "source": f"placeholder://feed-{n}",
         "updated_utc": iso_utc_now(),
+        "description": f"Placeholder feed {n} (server-generated).",
         "categories": {
             "alerts": [base_items[0]],
             "events": [base_items[1]],
@@ -89,12 +98,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _html_with_keys(self) -> bytes:
+        key = os.environ.get("GMP_MAP_TILES_API_KEY", "").strip()
+        if not key:
+            key = "REPLACE_ME_SET_ENV_GMP_MAP_TILES_API_KEY"
+        return HTML_PAGE.replace("__GMP_MAP_TILES_API_KEY__", key).encode("utf-8")
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
 
-        if path == "/" or path == "/index.html":
-            self._send(200, HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        if path in ("/", "/index.html"):
+            self._send(200, self._html_with_keys(), "text/html; charset=utf-8")
             return
 
         if path.startswith("/api/feed/"):
@@ -102,25 +117,61 @@ class Handler(BaseHTTPRequestHandler):
                 n_str = path.rsplit("/", 1)[-1]
                 n = int(n_str)
                 if n < 2 or n > 6:
-                    raise ValueError("feed out of range")
+                    raise ValueError("feed out of range (expected 2..6)")
                 payload = build_placeholder_feed(n)
                 body = json.dumps(payload, indent=2).encode("utf-8")
                 self._send(200, body, "application/json; charset=utf-8")
             except Exception as e:
-                body = json.dumps({"error": str(e)}).encode("utf-8")
+                body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                self._send(400, body, "application/json; charset=utf-8")
+            return
+
+        self._send(404, b"Not Found", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == "/api/action":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                data = json.loads(raw.decode("utf-8") or "{}")
+
+                action = data.get("action")
+                payload = data.get("payload")
+
+                resp = {
+                    "ok": True,
+                    "updated_utc": iso_utc_now(),
+                    "received": {"action": action, "payload": payload},
+                }
+                body = json.dumps(resp, indent=2).encode("utf-8")
+                self._send(200, body, "application/json; charset=utf-8")
+            except Exception as e:
+                body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
                 self._send(400, body, "application/json; charset=utf-8")
             return
 
         self._send(404, b"Not Found", "text/plain; charset=utf-8")
 
     def log_message(self, fmt, *args):
-        # quieter logs; comment out to restore default logging
         return
 
 
 def main() -> None:
+    # Load dotenv before starting server
+    loaded = load_dotenv(".env", override=False)
+    load_dotenv(".env.local", override=False)  # optional secondary file
+
+    key = os.environ.get("GMP_MAP_TILES_API_KEY", "").strip()
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Serving on http://{HOST}:{PORT}/")
+    if not loaded:
+        print("NOTE: .env not found in current directory.")
+    if not key:
+        print("NOTE: GMP_MAP_TILES_API_KEY is not set. FEED 1 will not load tiles.")
     server.serve_forever()
 
 

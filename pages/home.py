@@ -1,9 +1,16 @@
+# pages/home.py
+
 HTML_PAGE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>UROPS PANOPT | Home</title>
+
+  <!-- CesiumJS (renderer for Google Photorealistic 3D Tiles) -->
+  <script src="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.105/Build/Cesium/Cesium.js"></script>
+  <link href="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.105/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+
   <style>
     :root {
       --bg: #0f1115;
@@ -57,17 +64,15 @@ HTML_PAGE = """<!doctype html>
       margin-top: 4px;
     }
 
-    /* FEED 1 */
+    /* FEED 1 (Cesium container) */
     .feed1-frame {
       width: 800px;
       height: 650px;
       background: #0b0d12;
       border: 2px solid var(--border);
       border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       position: relative;
+      overflow: hidden;
       margin-bottom: 16px;
     }
 
@@ -81,13 +86,13 @@ HTML_PAGE = """<!doctype html>
       background: rgba(21,25,36,0.7);
       font-size: 12px;
       color: var(--muted);
+      z-index: 5;
+      pointer-events: none;
     }
 
-    .feed1-frame .placeholder {
-      color: var(--muted);
-      font-size: 14px;
-      text-align: center;
-      padding: 0 14px;
+    #cesiumContainer {
+      width: 100%;
+      height: 100%;
     }
 
     /* Controls */
@@ -197,6 +202,7 @@ HTML_PAGE = """<!doctype html>
       font-size: 12px;
       margin-bottom: 10px;
       white-space: pre-wrap;
+      text-align: left;
     }
 
     .feed-desc {
@@ -205,70 +211,224 @@ HTML_PAGE = """<!doctype html>
       padding: 8px;
       color: var(--muted);
       font-size: 12px;
+      text-align: left;
     }
   </style>
-</head>
-<script>
-  async function loadFeed(n) {
-    const panel = document.querySelector(`.feed-panel[data-feed="${n}"]`);
-    if (!panel) return;
 
-    const contentEl = panel.querySelector(".feed-content");
-    const descEl = panel.querySelector(".feed-desc");
+  <script>
+    // Injected server-side from panopt.py
+    const GMP_MAP_TILES_API_KEY = "__GMP_MAP_TILES_API_KEY__";
 
-    try {
-      contentEl.textContent = "Loading…";
-      const res = await fetch(`/api/feed/${n}`, { cache: "no-store" });
-      const data = await res.json();
-
-      if (!res.ok) {
-        contentEl.textContent = JSON.stringify(data, null, 2);
-        descEl.textContent = `Error loading FEED ${n}.`;
-        return;
-      }
-
-      // Expecting your placeholder payload to be JSON-friendly.
-      // Common patterns: {items:[...], description:"..."} or similar.
-      contentEl.textContent = JSON.stringify(data, null, 2);
-
-      if (data && typeof data.description === "string") {
-        descEl.textContent = data.description;
-      } else {
-        descEl.textContent = `Description for FEED ${n}.`;
-      }
-    } catch (err) {
-      contentEl.textContent = String(err);
-      descEl.textContent = `Error loading FEED ${n}.`;
+    async function sendAction(action, payload) {
+      const res = await fetch("/api/action", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ action, payload })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && data.error) ? data.error : ("HTTP " + res.status));
+      return data;
     }
-  }
 
-  function wirePanels() {
-    document.querySelectorAll(".feed-panel").forEach(panel => {
-      const n = Number(panel.getAttribute("data-feed"));
-      const btn = panel.querySelector(".add-feed");
-      if (btn) btn.addEventListener("click", () => loadFeed(n));
+    async function loadFeed(n) {
+      const panel = document.querySelector('.feed-panel[data-feed="' + n + '"]');
+      if (!panel) return;
+
+      const contentEl = panel.querySelector(".feed-content");
+      const descEl = panel.querySelector(".feed-desc");
+
+      try {
+        contentEl.textContent = "Loading…";
+        const res = await fetch("/api/feed/" + n, { cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          contentEl.textContent = JSON.stringify(data, null, 2);
+          descEl.textContent = "Error loading FEED " + n + ".";
+          return;
+        }
+
+        contentEl.textContent = JSON.stringify(data, null, 2);
+        descEl.textContent = (data && typeof data.description === "string")
+          ? data.description
+          : ("Description for FEED " + n + ".");
+      } catch (err) {
+        contentEl.textContent = String(err);
+        descEl.textContent = "Error loading FEED " + n + ".";
+      }
+    }
+
+    function wirePanels() {
+      document.querySelectorAll(".feed-panel").forEach(panel => {
+        const n = Number(panel.getAttribute("data-feed"));
+        const btn = panel.querySelector(".add-feed");
+        if (btn) btn.addEventListener("click", () => loadFeed(n));
+      });
+    }
+
+    function wireGridButtons() {
+      document.querySelectorAll(".btn[data-action]").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const action = btn.getAttribute("data-action");
+          btn.disabled = true;
+          try {
+            await sendAction(action, null);
+          } catch (e) {
+            console.error(e);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    function wireEnter() {
+      const input = document.getElementById("enter-input");
+      const enterBtn = document.getElementById("enter-btn");
+
+      async function submit() {
+        const text = (input.value || "").trim();
+        if (!text) return;
+        enterBtn.disabled = true;
+        try {
+          await sendAction("ENTER", { text });
+          input.value = "";
+        } catch (e) {
+          console.error(e);
+        } finally {
+          enterBtn.disabled = false;
+        }
+      }
+
+      enterBtn.addEventListener("click", submit);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    }
+
+    async function initFeed1Cesium() {
+      const label = document.querySelector(".feed1-frame .label");
+      const setStatus = (s) => { if (label) label.textContent = s; };
+
+      try {
+        if (!GMP_MAP_TILES_API_KEY || GMP_MAP_TILES_API_KEY.includes("REPLACE_ME")) {
+          setStatus("FEED 1 (missing API key)");
+          return;
+        }
+
+        // IMPORTANT: stop Cesium from attempting Ion defaults
+        Cesium.Ion.defaultAccessToken = undefined;
+
+        const container = document.getElementById("cesiumContainer");
+        if (!container) {
+          setStatus("FEED 1 (missing #cesiumContainer)");
+          return;
+        }
+
+        setStatus("FEED 1 (initializing…)");
+
+        // Google Photorealistic 3D Tiles root tileset
+        const rootUrl =
+          "https://tile.googleapis.com/v1/3dtiles/root.json?key=" +
+          encodeURIComponent(GMP_MAP_TILES_API_KEY);
+
+        // Probe root.json so we get the real HTTP error in-console
+        const probeRes = await fetch(rootUrl, { cache: "no-store" });
+        if (!probeRes.ok) {
+          const txt = await probeRes.text().catch(() => "");
+          setStatus(`FEED 1 (root.json HTTP ${probeRes.status})`);
+          console.error("root.json error:", probeRes.status, txt);
+          return;
+        }
+
+        // Create a Viewer with NO base layers / NO terrain (prevents Ion calls)
+        const viewer = new Cesium.Viewer(container, {
+          baseLayer: false,                 // Cesium >=1.104 way to disable base layer
+          baseLayerPicker: false,
+          terrain: new Cesium.EllipsoidTerrainProvider(), // no Ion terrain
+          geocoder: false,
+          homeButton: false,
+          sceneModePicker: false,
+          navigationHelpButton: false,
+          fullscreenButton: false,
+          animation: false,
+          timeline: false,
+          infoBox: false,
+          selectionIndicator: false,
+          requestRenderMode: false
+        });
+
+        // Clean background (no “space” UI)
+        viewer.scene.globe.show = false;
+        viewer.scene.skyBox.show = false;
+        viewer.scene.sun.show = false;
+        viewer.scene.moon.show = false;
+        viewer.scene.backgroundColor = Cesium.Color.fromCssColorString("#0b0d12");
+
+        // Statue of Liberty
+        const lat = 40.6892494;
+        const lon = -74.0445004;
+
+        viewer.camera.setView({
+          destination: Cesium.Cartesian3.fromDegrees(lon, lat, 2500.0),
+          orientation: {
+            heading: Cesium.Math.toRadians(20.0),
+            pitch: Cesium.Math.toRadians(-35.0),
+            roll: 0.0
+          }
+        });
+
+        setStatus("FEED 1 (loading tiles…)");
+
+        // Modern Cesium API (fixes deprecations)
+        const tileset = await Cesium.Cesium3DTileset.fromUrl(rootUrl, {
+          showCreditsOnScreen: true
+        });
+
+        // Add tileset after it resolves
+        viewer.scene.primitives.add(tileset);
+
+        setStatus("FEED 1 (tiles loaded)");
+
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lon, lat, 900.0),
+          orientation: {
+            heading: Cesium.Math.toRadians(20.0),
+            pitch: Cesium.Math.toRadians(-40.0),
+            roll: 0.0
+          },
+          duration: 1.5
+        });
+
+        window.__viewer = viewer;
+        window.__tileset = tileset;
+      } catch (e) {
+        setStatus("FEED 1 (init error)");
+        console.error("FEED 1 init error:", e);
+      }
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      wirePanels();
+      wireGridButtons();
+      wireEnter();
+
+      initFeed1Cesium();
+
+      [2,3,4,5,6].forEach(loadFeed);
+      setInterval(() => [2,3,4,5,6].forEach(loadFeed), 5000);
     });
-  }
+  </script>
+</head>
 
-  // Initial load feeds 2–6
-  window.addEventListener("DOMContentLoaded", () => {
-    wirePanels();
-    wireGridButtons();
-    [2,3,4,5,6].forEach(loadFeed);
-  });
-</script>
 <body>
   <div class="wrap">
     <div class="header">
       <h1>UROPS PANOPT | Home</h1>
-      <div class="sub">Prototype UI scaffold (FEED 1 placeholder + FEED 2–6 panels)</div>
+      <div class="sub">Prototype UI scaffold (FEED 1: Google Photorealistic 3D Tiles via Cesium + FEED 2–6 panels)</div>
     </div>
 
     <div class="feed1-frame">
       <div class="label">FEED 1</div>
-      <div class="placeholder">
-        Fixed 800×650 window. Later: replace this area with an image/screencap stream.
-      </div>
+      <div id="cesiumContainer"></div>
     </div>
 
     <div class="controls">
@@ -288,81 +448,43 @@ HTML_PAGE = """<!doctype html>
       </div>
 
       <div class="enter-area">
-        <input type="text" size="34" placeholder="   - Your Input Here -" />
-        <button class="enter-btn">Enter</button>
+        <input id="enter-input" type="text" size="34" placeholder="   - Your Input Here -" />
+        <button id="enter-btn" class="enter-btn">Enter</button>
       </div>
     </div>
 
     <div class="feeds">
       <div class="feed-panel" data-feed="2">
-        <div class="row">
-          <div class="title">FEED 2</div>
-          <button class="add-feed">Refresh</button>
-        </div>
+        <div class="row"><div class="title">FEED 2</div><button class="add-feed">Refresh</button></div>
         <div class="feed-content">Loading…</div>
         <div class="feed-desc">Description for FEED 2.</div>
       </div>
 
-      <div class="feed-panel" data-feed="2">
-        <div class="row">
-          <div class="title">FEED 2</div>
-          <button class="add-feed">Refresh</button>
-        </div>
+      <div class="feed-panel" data-feed="3">
+        <div class="row"><div class="title">FEED 3</div><button class="add-feed">Refresh</button></div>
         <div class="feed-content">Loading…</div>
-        <div class="feed-desc">Description for FEED 2.</div>
+        <div class="feed-desc">Description for FEED 3.</div>
       </div>
 
-      <div class="feed-panel" data-feed="2">
-        <div class="row">
-          <div class="title">FEED 2</div>
-          <button class="add-feed">Refresh</button>
-        </div>
+      <div class="feed-panel" data-feed="4">
+        <div class="row"><div class="title">FEED 4</div><button class="add-feed">Refresh</button></div>
         <div class="feed-content">Loading…</div>
-        <div class="feed-desc">Description for FEED 2.</div>
+        <div class="feed-desc">Description for FEED 4.</div>
       </div>
 
-      <div class="feed-panel" data-feed="2">
-        <div class="row">
-          <div class="title">FEED 2</div>
-          <button class="add-feed">Refresh</button>
-        </div>
+      <div class="feed-panel" data-feed="5">
+        <div class="row"><div class="title">FEED 5</div><button class="add-feed">Refresh</button></div>
         <div class="feed-content">Loading…</div>
-        <div class="feed-desc">Description for FEED 2.</div>
+        <div class="feed-desc">Description for FEED 5.</div>
       </div>
 
-      <div class="feed-panel" data-feed="2">
-        <div class="row">
-          <div class="title">FEED 2</div>
-          <button class="add-feed">Refresh</button>
-        </div>
+      <div class="feed-panel" data-feed="6">
+        <div class="row"><div class="title">FEED 6</div><button class="add-feed">Refresh</button></div>
         <div class="feed-content">Loading…</div>
-        <div class="feed-desc">Description for FEED 2.</div>
+        <div class="feed-desc">Description for FEED 6.</div>
       </div>
     </div>
   </div>
-  async function sendAction(action, payload) {
-    // This will 404 until you implement it server-side; that’s fine for now.
-    const res = await fetch("/api/action", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ action, payload })
-    });
-    return res.json().catch(() => ({}));
-  }
-
-  function wireGridButtons() {
-    document.querySelectorAll(".btn[data-action]").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const action = btn.getAttribute("data-action");
-        btn.disabled = true;
-        try {
-          await sendAction(action, null);
-        } finally {
-          btn.disabled = false;
-        }
-      });
-    });
-  }
 </body>
 </html>
 """
