@@ -111,15 +111,6 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send(200, self._html_with_keys(), "text/html; charset=utf-8")
             return
-        
-        if path == "/favicon.ico":
-            try:
-                with open("favicon.ico", "rb") as f:
-                    body = f.read()
-                self._send(200, body, "image/x-icon")
-            except FileNotFoundError:
-                self._send(404, b"Not Found", "text/plain; charset=utf-8")
-            return
 
         if path.startswith("/api/feed/"):
             try:
