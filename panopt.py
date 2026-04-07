@@ -18,14 +18,26 @@ from __future__ import annotations
 import json
 import os
 import time
+
+# for adbs exchange
+import math
+import urllib.error
+import urllib.parse
+import urllib.request
+
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from pages.home import HTML_PAGE
 
+import math
+import urllib.error
+import urllib.parse
+import urllib.request
+
 HOST = "127.0.0.1"
 PORT = 8080
-
+ADSBX_API_URL = "https://adsbexchange.com/api/aircraft"
 
 def iso_utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -68,6 +80,53 @@ def load_dotenv(path: str = ".env", override: bool = False) -> bool:
                 os.environ[k] = v
 
     return True
+
+
+def adsbx_credentials_present() -> bool:
+    return bool(os.environ.get("ADSBX_API_AUTH", "").strip())
+
+
+def fetch_adsbx_aircraft_near(lat: float, lon: float, dist_nm: int = 100) -> dict:
+    api_auth = os.environ.get("ADSBX_API_AUTH", "").strip()
+    if not api_auth:
+        raise RuntimeError("ADSBexchange credentials are not configured.")
+
+    dist_nm = max(1, min(int(dist_nm), 100))
+
+    url = f"{ADSBX_API_URL}/lat/{lat}/lon/{lon}/dist/{dist_nm}/"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "api-auth": api_auth,
+        },
+        method="GET",
+    )
+
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def estimate_radius_nm_from_view(
+    center_lat: float,
+    center_lon: float,
+    lamin: float | None,
+    lomin: float | None,
+    lamax: float | None,
+    lomax: float | None,
+) -> int:
+    if None in (lamin, lomin, lamax, lomax):
+        return 50
+
+    # Conservative estimate from center to far corner, clamped to ADSBx 100 NM cap.
+    dlat = max(abs(center_lat - lamin), abs(center_lat - lamax))
+    dlon = max(abs(center_lon - lomin), abs(center_lon - lomax))
+
+    lat_nm = dlat * 60.0
+    lon_nm = dlon * 60.0 * max(math.cos(math.radians(center_lat)), 0.1)
+    radius_nm = math.ceil(math.hypot(lat_nm, lon_nm))
+
+    return max(5, min(radius_nm, 100))
 
 
 def build_placeholder_feed(n: int) -> dict:
@@ -134,6 +193,48 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
                 self._send(400, body, "application/json; charset=utf-8")
             return
+        
+        
+        if path == "/api/adsbx/aircraft":
+            try:
+                qs = urllib.parse.parse_qs(parsed.query)
+
+                def get_float(name: str) -> float | None:
+                    raw = qs.get(name, [None])[0]
+                    if raw in (None, ""):
+                        return None
+                    return float(raw)
+
+                lat = get_float("lat")
+                lon = get_float("lon")
+                lamin = get_float("lamin")
+                lomin = get_float("lomin")
+                lamax = get_float("lamax")
+                lomax = get_float("lomax")
+
+                if lat is None or lon is None:
+                    raise ValueError("lat and lon are required")
+
+                dist_nm = estimate_radius_nm_from_view(lat, lon, lamin, lomin, lamax, lomax)
+                payload = fetch_adsbx_aircraft_near(lat=lat, lon=lon, dist_nm=dist_nm)
+
+                body = json.dumps(payload).encode("utf-8")
+                self._send(200, body, "application/json; charset=utf-8")
+            except urllib.error.HTTPError as e:
+                try:
+                    detail = e.read().decode("utf-8", errors="replace")
+                except Exception:
+                    detail = ""
+                body = json.dumps({
+                    "ok": False,
+                    "error": f"ADSBexchange HTTP {e.code}",
+                    "detail": detail,
+                }).encode("utf-8")
+                self._send(502, body, "application/json; charset=utf-8")
+            except Exception as e:
+                body = json.dumps({"ok": False, "error": str(e)}).encode("utf-8")
+                self._send(400, body, "application/json; charset=utf-8")
+            return
 
         self._send(404, b"Not Found", "text/plain; charset=utf-8")
 
@@ -172,7 +273,10 @@ def main() -> None:
     # Load dotenv before starting server
     loaded = load_dotenv(".env", override=False)
     load_dotenv(".env.local", override=False)  # optional secondary file
-
+    
+    if not adsbx_credentials_present():
+            print("NOTE: ADSBexchange credentials are not set. ADSBx overlay will be unavailable.")
+    
     key = os.environ.get("GMP_MAP_TILES_API_KEY", "").strip()
 
     server = ThreadingHTTPServer((HOST, PORT), Handler)

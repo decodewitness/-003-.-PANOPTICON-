@@ -6,9 +6,10 @@ HTML_PAGE = """<!doctype html>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>UROPS PANOPT | Home</title>
-  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+
   <script src="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.105/Build/Cesium/Cesium.js"></script>
   <link href="https://ajax.googleapis.com/ajax/libs/cesiumjs/1.105/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
 
   <style>
     :root {
@@ -125,7 +126,7 @@ HTML_PAGE = """<!doctype html>
       background: var(--btnHover);
     }
 
-    .btn.active {
+    .btn.active, .small-btn.active {
       background: var(--accent);
       color: white;
     }
@@ -467,7 +468,6 @@ HTML_PAGE = """<!doctype html>
   <script>
     const GMP_MAP_TILES_API_KEY = "__GMP_MAP_TILES_API_KEY__";
     const MAX_FEEDS = 33;
-
     const COUNTRY_SHOW_HEIGHT = 14000000.0;
     const CITY_SHOW_HEIGHT = 1600000.0;
     const SELECTED_SHOW_HEIGHT = 1600000.0;
@@ -627,8 +627,39 @@ HTML_PAGE = """<!doctype html>
       searchSeq: 0,
       dropdownItems: [],
       dropdownIndex: -1,
-      popoutWindow: null
+      popoutWindow: null,
+      adsbxEnabled: false,
+      adsbxEntities: [],
+      adsbxRefreshTimer: null
     }));
+
+    function getFeedState(feedId) {
+      return FEED_STATE[feedId - 1];
+    }
+
+    function getFeedRoot(feedId) {
+      return document.querySelector('.feed-card[data-feed="' + feedId + '"]');
+    }
+
+    function getFeedInput(feedId) {
+      return document.getElementById("feed-search-input-" + feedId);
+    }
+
+    function getFeedDropdown(feedId) {
+      return document.getElementById("autocomplete-list-" + feedId);
+    }
+
+    function getFeedGrid(feedId) {
+      return document.getElementById("location-list-" + feedId);
+    }
+
+    function getFeedLabel(feedId) {
+      return document.getElementById("viewer-label-" + feedId);
+    }
+
+    function getFeedContainer(feedId) {
+      return document.getElementById("viewer-container-" + feedId);
+    }
 
     function normalizeText(s) {
       return String(s || "").toLowerCase().trim();
@@ -641,69 +672,6 @@ HTML_PAGE = """<!doctype html>
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
-    }
-
-    function isCartesianInCanvas(viewer, CesiumLib, cartesian) {
-      if (!viewer || !cartesian) return false;
-
-      const scene = viewer.scene;
-      const camera = viewer.camera;
-      const ellipsoid = scene.globe && scene.globe.ellipsoid
-        ? scene.globe.ellipsoid
-        : CesiumLib.Ellipsoid.WGS84;
-
-      const toPoint = CesiumLib.Cartesian3.subtract(
-        cartesian,
-        camera.positionWC,
-        new CesiumLib.Cartesian3()
-      );
-      const normalized = CesiumLib.Cartesian3.normalize(toPoint, new CesiumLib.Cartesian3());
-      const dot = CesiumLib.Cartesian3.dot(camera.directionWC, normalized);
-      if (!(dot > 0.0)) return false;
-
-      const occluder = new CesiumLib.EllipsoidalOccluder(ellipsoid, camera.positionWC);
-      if (!occluder.isPointVisible(cartesian)) return false;
-
-      const win = CesiumLib.SceneTransforms.wgs84ToWindowCoordinates(scene, cartesian);
-      if (!win) return false;
-      if (!Number.isFinite(win.x) || !Number.isFinite(win.y)) return false;
-
-      const w = scene.canvas.clientWidth;
-      const h = scene.canvas.clientHeight;
-      return win.x >= 0 && win.x <= w && win.y >= 0 && win.y <= h;
-    }
-
-    function updateEntitiesVisibilityForViewer(viewer, CesiumLib, countryEntities, cityEntities, selectedCityEntity, selectedCountryEntity) {
-      if (!viewer) return;
-
-      const h = viewer.camera.positionCartographic
-        ? viewer.camera.positionCartographic.height
-        : Number.POSITIVE_INFINITY;
-
-      const showCountriesByZoom = h <= COUNTRY_SHOW_HEIGHT;
-      const showCitiesByZoom = h <= CITY_SHOW_HEIGHT;
-      const showSelectedByZoom = h <= SELECTED_SHOW_HEIGHT;
-      const now = CesiumLib.JulianDate.now();
-
-      for (const entity of countryEntities) {
-        const pos = entity.position && entity.position.getValue ? entity.position.getValue(now) : null;
-        entity.show = showCountriesByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
-      }
-
-      for (const entity of cityEntities) {
-        const pos = entity.position && entity.position.getValue ? entity.position.getValue(now) : null;
-        entity.show = showCitiesByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
-      }
-
-      if (selectedCityEntity) {
-        const pos = selectedCityEntity.position && selectedCityEntity.position.getValue ? selectedCityEntity.position.getValue(now) : null;
-        selectedCityEntity.show = showSelectedByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
-      }
-
-      if (selectedCountryEntity) {
-        const pos = selectedCountryEntity.position && selectedCountryEntity.position.getValue ? selectedCountryEntity.position.getValue(now) : null;
-        selectedCountryEntity.show = showSelectedByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
-      }
     }
 
     async function sendAction(action, payload) {
@@ -843,11 +811,7 @@ HTML_PAGE = """<!doctype html>
     }
 
     function simplifyDisplayName(displayName) {
-      return String(displayName || "")
-        .split(",")
-        .slice(0, 3)
-        .join(", ")
-        .trim();
+      return String(displayName || "").split(",").slice(0, 3).join(", ").trim();
     }
 
     async function geocodeWorldwide(query) {
@@ -865,9 +829,7 @@ HTML_PAGE = """<!doctype html>
         headers: { "Accept": "application/json" }
       });
 
-      if (!res.ok) {
-        throw new Error("Geocoder HTTP " + res.status);
-      }
+      if (!res.ok) throw new Error("Geocoder HTTP " + res.status);
 
       const data = await res.json();
       if (!Array.isArray(data)) return [];
@@ -885,8 +847,7 @@ HTML_PAGE = """<!doctype html>
           lon: Number(item.lon),
           height: 2200,
           heading: 20,
-          pitch: -45,
-          raw: item
+          pitch: -45
         };
       });
     }
@@ -938,34 +899,6 @@ HTML_PAGE = """<!doctype html>
       }
     }
 
-    function getFeedState(feedId) {
-      return FEED_STATE[feedId - 1];
-    }
-
-    function getFeedRoot(feedId) {
-      return document.querySelector('.feed-card[data-feed="' + feedId + '"]');
-    }
-
-    function getFeedInput(feedId) {
-      return document.getElementById("feed-search-input-" + feedId);
-    }
-
-    function getFeedDropdown(feedId) {
-      return document.getElementById("autocomplete-list-" + feedId);
-    }
-
-    function getFeedGrid(feedId) {
-      return document.getElementById("location-list-" + feedId);
-    }
-
-    function getFeedLabel(feedId) {
-      return document.getElementById("viewer-label-" + feedId);
-    }
-
-    function getFeedContainer(feedId) {
-      return document.getElementById("viewer-container-" + feedId);
-    }
-
     function hideDropdown(feedId) {
       const state = getFeedState(feedId);
       const listEl = getFeedDropdown(feedId);
@@ -996,17 +929,14 @@ HTML_PAGE = """<!doctype html>
         btn.className = "autocomplete-item" + (idx === state.dropdownIndex ? " active" : "");
 
         const meta = loc.subtitle ? loc.subtitle : (loc.country || "Unknown region");
-
         btn.innerHTML = `
           <span class="name">${escapeHtml(loc.name)}</span>
           <span class="meta">${escapeHtml(meta)}</span>
         `;
-
         btn.addEventListener("mousedown", (e) => {
           e.preventDefault();
           selectSuggestion(feedId, idx);
         });
-
         listEl.appendChild(btn);
       });
 
@@ -1043,7 +973,6 @@ HTML_PAGE = """<!doctype html>
         btn.className = "location-item";
 
         const meta = loc.subtitle ? loc.subtitle : (loc.country || "Unknown region");
-
         btn.innerHTML = `
           <span class="loc-name">${escapeHtml(loc.name)}</span>
           <span class="loc-meta">${escapeHtml(meta)}</span>
@@ -1051,10 +980,227 @@ HTML_PAGE = """<!doctype html>
 
         btn.addEventListener("click", () => {
           hideDropdown(feedId);
-          flyToLocation(feedId, loc);
+          ensureFeedViewer(feedId).then(() => {
+            flyToLocation(feedId, loc);
+          }).catch(console.error);
         });
 
         listEl.appendChild(btn);
+      }
+    }
+
+    function clearAdsbxEntities(feedId) {
+      const state = getFeedState(feedId);
+      const viewer = state.viewer;
+      if (!viewer) {
+        state.adsbxEntities = [];
+        return;
+      }
+      for (const entity of state.adsbxEntities) {
+        try { viewer.entities.remove(entity); } catch (e) {}
+      }
+      state.adsbxEntities = [];
+    }
+
+    function getFeedCenterLocation(feedId) {
+      const state = getFeedState(feedId);
+      return state.currentLocation || IMPORTANT_LOCATIONS[(feedId - 1) % IMPORTANT_LOCATIONS.length];
+    }
+
+    function getViewerBounds(viewer) {
+      if (!viewer) return null;
+      const rect = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid);
+      if (!rect) return null;
+
+      const west = Cesium.Math.toDegrees(rect.west);
+      const south = Cesium.Math.toDegrees(rect.south);
+      const east = Cesium.Math.toDegrees(rect.east);
+      const north = Cesium.Math.toDegrees(rect.north);
+
+      if (![west, south, east, north].every(Number.isFinite)) return null;
+      return { lomin: west, lamin: south, lomax: east, lamax: north };
+    }
+
+    async function fetchAdsbxAircraftForFeed(feedId) {
+      const state = getFeedState(feedId);
+      const viewer = state.viewer;
+      if (!viewer || !state.adsbxEnabled) return;
+
+      const center = getFeedCenterLocation(feedId);
+      const bounds = getViewerBounds(viewer) || {};
+      const params = new URLSearchParams({
+        lat: String(center.lat),
+        lon: String(center.lon),
+      });
+
+      if (bounds.lamin !== undefined) params.set("lamin", String(bounds.lamin));
+      if (bounds.lomin !== undefined) params.set("lomin", String(bounds.lomin));
+      if (bounds.lamax !== undefined) params.set("lamax", String(bounds.lamax));
+      if (bounds.lomax !== undefined) params.set("lomax", String(bounds.lomax));
+
+      const res = await fetch("/api/adsbx/aircraft?" + params.toString(), { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data && data.error ? data.error : ("HTTP " + res.status));
+      renderAdsbxAircraft(feedId, data);
+    }
+
+    function renderAdsbxAircraft(feedId, data) {
+      const state = getFeedState(feedId);
+      const viewer = state.viewer;
+      if (!viewer) return;
+
+      clearAdsbxEntities(feedId);
+
+      const aircraft = Array.isArray(data.ac) ? data.ac : [];
+      for (const ac of aircraft) {
+        const lat = ac.lat;
+        const lon = ac.lon;
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+
+        const callsign = String(ac.flight || ac.r || ac.hex || "flight").trim();
+        const altitudeFeet = Number.isFinite(ac.alt_baro) ? ac.alt_baro : null;
+        const altitudeMeters = altitudeFeet !== null ? altitudeFeet * 0.3048 : 0.0;
+        const onGround = !!ac.ground;
+
+        const entity = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(lon, lat, Math.max(altitudeMeters, 0.0)),
+          point: {
+            pixelSize: onGround ? 5 : 7,
+            color: onGround
+              ? Cesium.Color.fromCssColorString("#f59e0b")
+              : Cesium.Color.fromCssColorString("#22c55e"),
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 1,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: callsign,
+            font: "12px sans-serif",
+            fillColor: Cesium.Color.WHITE,
+            style: Cesium.LabelStyle.FILL,
+            pixelOffset: new Cesium.Cartesian2(0, -14),
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            showBackground: false,
+          }
+        });
+
+        state.adsbxEntities.push(entity);
+      }
+    }
+
+    function stopAdsbxRefresh(feedId) {
+      const state = getFeedState(feedId);
+      if (state.adsbxRefreshTimer) {
+        clearInterval(state.adsbxRefreshTimer);
+        state.adsbxRefreshTimer = null;
+      }
+      clearAdsbxEntities(feedId);
+    }
+
+    async function startAdsbxRefresh(feedId) {
+      const state = getFeedState(feedId);
+      if (!state.viewer || !state.adsbxEnabled) return;
+
+      stopAdsbxRefresh(feedId);
+      state.adsbxEnabled = true;
+
+      try {
+        await fetchAdsbxAircraftForFeed(feedId);
+      } catch (e) {
+        console.error("initial ADSBx fetch error:", e);
+      }
+
+      state.adsbxRefreshTimer = setInterval(async () => {
+        const current = getFeedState(feedId);
+        if (!current.adsbxEnabled || !current.viewer) return;
+        try {
+          await fetchAdsbxAircraftForFeed(feedId);
+        } catch (e) {
+          console.error("ADSBx refresh error:", e);
+        }
+      }, 15000);
+    }
+
+    function setAdsbxEnabled(feedId, enabled) {
+      const state = getFeedState(feedId);
+      state.adsbxEnabled = !!enabled;
+
+      const btn = document.getElementById("feed-adsbx-btn-" + feedId);
+      if (btn) {
+        btn.classList.toggle("active", state.adsbxEnabled);
+        btn.textContent = state.adsbxEnabled ? "ADSBx on" : "ADSBx off";
+      }
+
+      if (!state.adsbxEnabled) {
+        stopAdsbxRefresh(feedId);
+        return;
+      }
+
+      startAdsbxRefresh(feedId);
+    }
+
+    function isCartesianInCanvas(viewer, CesiumLib, cartesian) {
+      if (!viewer || !cartesian) return false;
+
+      const scene = viewer.scene;
+      const camera = viewer.camera;
+      const ellipsoid = scene.globe && scene.globe.ellipsoid
+        ? scene.globe.ellipsoid
+        : CesiumLib.Ellipsoid.WGS84;
+
+      const toPoint = CesiumLib.Cartesian3.subtract(
+        cartesian,
+        camera.positionWC,
+        new CesiumLib.Cartesian3()
+      );
+      const normalized = CesiumLib.Cartesian3.normalize(toPoint, new CesiumLib.Cartesian3());
+      const dot = CesiumLib.Cartesian3.dot(camera.directionWC, normalized);
+      if (!(dot > 0.0)) return false;
+
+      const occluder = new CesiumLib.EllipsoidalOccluder(ellipsoid, camera.positionWC);
+      if (!occluder.isPointVisible(cartesian)) return false;
+
+      const win = CesiumLib.SceneTransforms.wgs84ToWindowCoordinates(scene, cartesian);
+      if (!win) return false;
+      if (!Number.isFinite(win.x) || !Number.isFinite(win.y)) return false;
+
+      const w = scene.canvas.clientWidth;
+      const h = scene.canvas.clientHeight;
+      return win.x >= 0 && win.x <= w && win.y >= 0 && win.y <= h;
+    }
+
+    function updateEntitiesVisibilityForViewer(viewer, CesiumLib, countryEntities, cityEntities, selectedCityEntity, selectedCountryEntity) {
+      if (!viewer) return;
+
+      const h = viewer.camera.positionCartographic
+        ? viewer.camera.positionCartographic.height
+        : Number.POSITIVE_INFINITY;
+
+      const showCountriesByZoom = h <= COUNTRY_SHOW_HEIGHT;
+      const showCitiesByZoom = h <= CITY_SHOW_HEIGHT;
+      const showSelectedByZoom = h <= SELECTED_SHOW_HEIGHT;
+      const now = CesiumLib.JulianDate.now();
+
+      for (const entity of countryEntities) {
+        const pos = entity.position && entity.position.getValue ? entity.position.getValue(now) : null;
+        entity.show = showCountriesByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
+      }
+
+      for (const entity of cityEntities) {
+        const pos = entity.position && entity.position.getValue ? entity.position.getValue(now) : null;
+        entity.show = showCitiesByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
+      }
+
+      if (selectedCityEntity) {
+        const pos = selectedCityEntity.position && selectedCityEntity.position.getValue ? selectedCityEntity.position.getValue(now) : null;
+        selectedCityEntity.show = showSelectedByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
+      }
+
+      if (selectedCountryEntity) {
+        const pos = selectedCountryEntity.position && selectedCountryEntity.position.getValue ? selectedCountryEntity.position.getValue(now) : null;
+        selectedCountryEntity.show = showSelectedByZoom && isCartesianInCanvas(viewer, CesiumLib, pos);
       }
     }
 
@@ -1091,7 +1237,6 @@ HTML_PAGE = """<!doctype html>
       if (!viewer || !location) return;
 
       clearActiveLocationLabels(feedId);
-
       const position = Cesium.Cartesian3.fromDegrees(location.lon, location.lat, 0);
 
       state.cityLabelEntity = viewer.entities.add({
@@ -1100,8 +1245,6 @@ HTML_PAGE = """<!doctype html>
           text: String(location.name || "Unknown place"),
           font: "bold 24px sans-serif",
           fillColor: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 3,
           style: Cesium.LabelStyle.FILL,
           pixelOffset: new Cesium.Cartesian2(0, -26),
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
@@ -1117,8 +1260,6 @@ HTML_PAGE = """<!doctype html>
           text: String(location.country || ""),
           font: "bold 18px sans-serif",
           fillColor: Cesium.Color.fromCssColorString("#f59e0b"),
-          outlineColor: Cesium.Color.BLACK,
-          outlineWidth: 3,
           style: Cesium.LabelStyle.FILL,
           pixelOffset: new Cesium.Cartesian2(0, -4),
           verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
@@ -1143,8 +1284,6 @@ HTML_PAGE = """<!doctype html>
             text: country.name,
             font: "bold 18px sans-serif",
             fillColor: Cesium.Color.fromCssColorString("#f59e0b"),
-            outlineColor: Cesium.Color.BLACK,
-            outlineWidth: 3,
             style: Cesium.LabelStyle.FILL,
             horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
             verticalOrigin: Cesium.VerticalOrigin.CENTER,
@@ -1161,8 +1300,6 @@ HTML_PAGE = """<!doctype html>
             text: city.name,
             font: "bold 14px sans-serif",
             fillColor: Cesium.Color.WHITE,
-            outlineColor: Cesium.Color.BLACK,
-            outlineWidth: 3,
             style: Cesium.LabelStyle.FILL,
             pixelOffset: new Cesium.Cartesian2(0, -6),
             horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
@@ -1175,31 +1312,6 @@ HTML_PAGE = """<!doctype html>
 
       updateWorldReferenceLabelVisibility(feedId);
     }
-
-    function lockCameraToLocation(feedId) {
-    const state = getFeedState(feedId);
-    const viewer = state.viewer;
-    const loc = state.currentLocation;
-
-    if (!viewer || !loc) return;
-
-    const target = Cesium.Cartesian3.fromDegrees(loc.lon, loc.lat, 0);
-
-    viewer.scene.postRender.addEventListener(() => {
-      const camera = viewer.camera;
-
-      const range = camera.positionCartographic.height;
-
-      camera.lookAt(
-        target,
-        new Cesium.HeadingPitchRange(
-          camera.heading,
-          camera.pitch,
-          range
-        )
-      );
-    });
-  }
 
     function wireViewerLabelVisibility(feedId) {
       const state = getFeedState(feedId);
@@ -1220,7 +1332,6 @@ HTML_PAGE = """<!doctype html>
       const state = getFeedState(feedId);
       const viewer = state.viewer;
       const label = getFeedLabel(feedId);
-
       if (!viewer || !location) return;
 
       state.currentLocation = location;
@@ -1250,50 +1361,10 @@ HTML_PAGE = """<!doctype html>
       });
     }
 
-    async function updateSearchUI(feedId, query) {
-      const state = getFeedState(feedId);
-      const mySeq = ++state.searchSeq;
-      const results = await buildSearchResults(query);
-      if (mySeq !== state.searchSeq) return;
-
-      renderDropdown(feedId, results.dropdown);
-      renderLocationGrid(feedId, results.grid);
-    }
-
-    async function searchAndFlyToBestMatch(feedId) {
-      const input = getFeedInput(feedId);
-      if (!input) return;
-
-      const q = String(input.value || "").trim();
-      if (!q) return;
-
-      const results = await buildSearchResults(q);
-      renderDropdown(feedId, results.dropdown);
-      renderLocationGrid(feedId, results.grid);
-
-      const best = results.dropdown[0] || results.grid[0];
-      if (best) {
-        hideDropdown(feedId);
-        ensureFeedViewer(feedId).then(() => flyToLocation(feedId, best)).catch(console.error);
-      }
-    }
-
-    function selectSuggestion(feedId, idx) {
-      const state = getFeedState(feedId);
-      if (idx < 0 || idx >= state.dropdownItems.length) return;
-
-      const selected = state.dropdownItems[idx];
-      const input = getFeedInput(feedId);
-      if (input) {
-        input.value = selected.country ? `${selected.name}, ${selected.country}` : selected.name;
-      }
-
-      hideDropdown(feedId);
-      ensureFeedViewer(feedId).then(() => flyToLocation(feedId, selected)).catch(console.error);
-    }
-
     function destroyFeedViewer(feedId) {
       const state = getFeedState(feedId);
+      stopAdsbxRefresh(feedId);
+
       if (!state.viewer) {
         state.isInitialized = false;
         state.isInitializing = false;
@@ -1316,14 +1387,10 @@ HTML_PAGE = """<!doctype html>
       state.worldCountryEntities = [];
 
       const label = getFeedLabel(feedId);
-      if (label) {
-        label.textContent = `FEED ${feedId}`;
-      }
+      if (label) label.textContent = `FEED ${feedId}`;
 
       const container = getFeedContainer(feedId);
-      if (container) {
-        container.innerHTML = "";
-      }
+      if (container) container.innerHTML = "";
     }
 
     async function initFeedViewer(feedId) {
@@ -1336,7 +1403,6 @@ HTML_PAGE = """<!doctype html>
       if (state.isInitializing || state.isInitialized) return;
 
       state.isInitializing = true;
-
       const setStatus = (s) => { label.textContent = s; };
 
       try {
@@ -1348,7 +1414,8 @@ HTML_PAGE = """<!doctype html>
 
         Cesium.Ion.defaultAccessToken = undefined;
 
-        const rootUrl = "https://tile.googleapis.com/v1/3dtiles/root.json?key=" +
+        const rootUrl =
+          "https://tile.googleapis.com/v1/3dtiles/root.json?key=" +
           encodeURIComponent(GMP_MAP_TILES_API_KEY);
 
         const probeRes = await fetch(rootUrl, { cache: "no-store" });
@@ -1413,7 +1480,11 @@ HTML_PAGE = """<!doctype html>
         setStatus(`FEED ${feedId} (${defaultLocation.name}, ${defaultLocation.country})`);
 
         viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(defaultLocation.lon, defaultLocation.lat, defaultLocation.height || 900.0),
+          destination: Cesium.Cartesian3.fromDegrees(
+            defaultLocation.lon,
+            defaultLocation.lat,
+            defaultLocation.height || 900.0
+          ),
           orientation: {
             heading: Cesium.Math.toRadians(defaultLocation.heading || 20.0),
             pitch: Cesium.Math.toRadians(defaultLocation.pitch || -40.0),
@@ -1422,6 +1493,10 @@ HTML_PAGE = """<!doctype html>
           duration: 1.2,
           complete: () => updateWorldReferenceLabelVisibility(feedId)
         });
+
+        if (state.adsbxEnabled) {
+          startAdsbxRefresh(feedId);
+        }
       } catch (e) {
         state.isInitializing = false;
         state.isInitialized = false;
@@ -1433,6 +1508,7 @@ HTML_PAGE = """<!doctype html>
     async function ensureFeedViewer(feedId) {
       const state = getFeedState(feedId);
       if (state.isInitialized && state.viewer) return;
+
       if (state.isInitializing) {
         let tries = 0;
         while (state.isInitializing && tries < 200) {
@@ -1441,7 +1517,63 @@ HTML_PAGE = """<!doctype html>
         }
         return;
       }
+
       await initFeedViewer(feedId);
+    }
+
+    async function updateSearchUI(feedId, query) {
+      const state = getFeedState(feedId);
+      const mySeq = ++state.searchSeq;
+      const results = await buildSearchResults(query);
+      if (mySeq !== state.searchSeq) return;
+
+      renderDropdown(feedId, results.dropdown);
+      renderLocationGrid(feedId, results.grid);
+    }
+
+    async function searchAndFlyToBestMatch(feedId) {
+      const input = getFeedInput(feedId);
+      if (!input) return;
+
+      const q = String(input.value || "").trim();
+      if (!q) return;
+
+      const results = await buildSearchResults(q);
+      renderDropdown(feedId, results.dropdown);
+      renderLocationGrid(feedId, results.grid);
+
+      const best = results.dropdown[0] || results.grid[0];
+      if (best) {
+        hideDropdown(feedId);
+        await ensureFeedViewer(feedId);
+        flyToLocation(feedId, best);
+      }
+    }
+
+    function selectSuggestion(feedId, idx) {
+      const state = getFeedState(feedId);
+      if (idx < 0 || idx >= state.dropdownItems.length) return;
+
+      const selected = state.dropdownItems[idx];
+      const input = getFeedInput(feedId);
+      if (input) {
+        input.value = selected.country ? `${selected.name}, ${selected.country}` : selected.name;
+      }
+
+      hideDropdown(feedId);
+      ensureFeedViewer(feedId).then(() => {
+        flyToLocation(feedId, selected);
+      }).catch(console.error);
+    }
+
+    function setGridColumns(activeCount) {
+      const grid = document.getElementById("feeds-grid");
+      if (!grid) return;
+
+      grid.classList.remove("cols-1", "cols-2", "cols-3");
+      if (activeCount <= 1) grid.classList.add("cols-1");
+      else if (activeCount <= 4) grid.classList.add("cols-2");
+      else grid.classList.add("cols-3");
     }
 
     function syncVisibleFeedViewers(activeCount) {
@@ -1452,17 +1584,6 @@ HTML_PAGE = """<!doctype html>
           destroyFeedViewer(i);
         }
       }
-    }
-
-    function setGridColumns(activeCount) {
-      const grid = document.getElementById("feeds-grid");
-      if (!grid) return;
-
-      grid.classList.remove("cols-1", "cols-2", "cols-3");
-
-      if (activeCount <= 1) grid.classList.add("cols-1");
-      else if (activeCount <= 4) grid.classList.add("cols-2");
-      else grid.classList.add("cols-3");
     }
 
     function setActiveFeedCount(count) {
@@ -1553,57 +1674,6 @@ HTML_PAGE = """<!doctype html>
 </html>`;
     }
 
-    function addWorldReferenceLabelsToViewer(viewer, CesiumLib) {
-      const cityEntities = WORLD_CITIES.map((city) => {
-        return viewer.entities.add({
-          position: CesiumLib.Cartesian3.fromDegrees(city.lon, city.lat, 0),
-          label: {
-            text: city.name,
-            font: "bold 14px sans-serif",
-            fillColor: CesiumLib.Color.WHITE,
-            outlineColor: CesiumLib.Color.BLACK,
-            outlineWidth: 3,
-            style: Cesium.LabelStyle.FILL,
-            pixelOffset: new CesiumLib.Cartesian2(0, -6),
-            horizontalOrigin: CesiumLib.HorizontalOrigin.CENTER,
-            verticalOrigin: CesiumLib.VerticalOrigin.BOTTOM,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-            showBackground: false
-          }
-        });
-      });
-
-      const countryEntities = COUNTRY_LABELS.map((country) => {
-        return viewer.entities.add({
-          position: CesiumLib.Cartesian3.fromDegrees(country.lon, country.lat, 0),
-          label: {
-            text: country.name,
-            font: "bold 18px sans-serif",
-            fillColor: CesiumLib.Color.fromCssColorString("#f59e0b"),
-            outlineColor: CesiumLib.Color.BLACK,
-            outlineWidth: 3,
-            style: Cesium.LabelStyle.FILL,
-            horizontalOrigin: CesiumLib.HorizontalOrigin.CENTER,
-            verticalOrigin: CesiumLib.VerticalOrigin.CENTER,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-            showBackground: false
-          }
-        });
-      });
-
-      viewer.camera.percentageChanged = 0.01;
-
-      const update = () => {
-        updateEntitiesVisibilityForViewer(viewer, CesiumLib, countryEntities, cityEntities, null, null);
-      };
-
-      viewer.camera.changed.addEventListener(update);
-      viewer.scene.postRender.addEventListener(update);
-      update();
-
-      return { cityEntities, countryEntities, update };
-    }
-
     async function openFeedInPopout(feedId) {
       const state = getFeedState(feedId);
       const location = state.currentLocation || IMPORTANT_LOCATIONS[feedId - 1] || IMPORTANT_LOCATIONS[0];
@@ -1630,9 +1700,7 @@ HTML_PAGE = """<!doctype html>
         }
 
         cw.Ion.defaultAccessToken = undefined;
-
-        const rootUrl = "https://tile.googleapis.com/v1/3dtiles/root.json?key=" +
-          encodeURIComponent(GMP_MAP_TILES_API_KEY);
+        const rootUrl = "https://tile.googleapis.com/v1/3dtiles/root.json?key=" + encodeURIComponent(GMP_MAP_TILES_API_KEY);
 
         const viewer = new cw.Viewer(w.document.getElementById("viewer"), {
           baseLayer: false,
@@ -1659,51 +1727,6 @@ HTML_PAGE = """<!doctype html>
         cw.Cesium3DTileset.fromUrl(rootUrl, { showCreditsOnScreen: true })
           .then((tileset) => {
             viewer.scene.primitives.add(tileset);
-
-            const refs = addWorldReferenceLabelsToViewer(viewer, cw);
-            const position = cw.Cartesian3.fromDegrees(location.lon, location.lat, 0);
-
-            const cityLabel = viewer.entities.add({
-              position,
-              label: {
-                text: String(location.name || "Unknown place"),
-                font: "bold 24px sans-serif",
-                fillColor: cw.Color.WHITE,
-                outlineColor: cw.Color.BLACK,
-                outlineWidth: 3,
-                style: Cesium.LabelStyle.FILL,
-                pixelOffset: new cw.Cartesian2(0, -26),
-                verticalOrigin: cw.VerticalOrigin.BOTTOM,
-                horizontalOrigin: cw.HorizontalOrigin.CENTER,
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
-                showBackground: false
-              }
-            });
-
-            const countryLabel = viewer.entities.add({
-              position,
-              label: {
-                text: String(location.country || ""),
-                font: "bold 18px sans-serif",
-                fillColor: cw.Color.fromCssColorString("#f59e0b"),
-                outlineColor: cw.Color.BLACK,
-                outlineWidth: 3,
-                style: Cesium.LabelStyle.FILL,
-                pixelOffset: new cw.Cartesian2(0, -4),
-                verticalOrigin: cw.VerticalOrigin.BOTTOM,
-                horizontalOrigin: cw.HorizontalOrigin.CENTER,
-                disableDepthTestDistance: Number.POSITIVE_INFINITY,
-                showBackground: false
-              }
-            });
-
-            const updateSelected = () => {
-              updateEntitiesVisibilityForViewer(viewer, cw, refs.countryEntities, refs.cityEntities, cityLabel, countryLabel);
-            };
-
-            viewer.camera.changed.addEventListener(updateSelected);
-            viewer.scene.postRender.addEventListener(updateSelected);
-
             viewer.camera.flyTo({
               destination: cw.Cartesian3.fromDegrees(location.lon, location.lat, location.height || 2200),
               orientation: {
@@ -1711,8 +1734,7 @@ HTML_PAGE = """<!doctype html>
                 pitch: cw.Math.toRadians(location.pitch || -45),
                 roll: 0.0
               },
-              duration: 1.2,
-              complete: updateSelected
+              duration: 1.2
             });
           })
           .catch((err) => {
@@ -1731,6 +1753,71 @@ HTML_PAGE = """<!doctype html>
       });
     }
 
+    function buildFeedCards() {
+      const grid = document.getElementById("feeds-grid");
+      if (!grid) return;
+
+      grid.innerHTML = "";
+
+      for (let i = 1; i <= MAX_FEEDS; i++) {
+        const card = document.createElement("section");
+        card.className = "feed-card";
+        card.setAttribute("data-feed", String(i));
+
+        card.innerHTML = `
+          <div class="feed-top">
+            <div class="feed-title">FEED ${i}</div>
+            <div class="feed-actions">
+              <button id="feed-adsbx-btn-${i}" class="small-btn" type="button">ADSBx off</button>
+              <button id="feed-reset-btn-${i}" class="small-btn" type="button">Reset</button>
+              <button id="feed-popout-btn-${i}" class="small-btn" type="button">Pop out</button>
+            </div>
+          </div>
+
+          <div class="viewer-frame">
+            <div id="viewer-label-${i}" class="viewer-label">FEED ${i}</div>
+            <div id="viewer-container-${i}" class="viewer-container"></div>
+          </div>
+
+          <div class="feed-search-wrap">
+            <div class="feed-search-row">
+              <input id="feed-search-input-${i}" class="feed-search-input" type="text" placeholder="Search any location for FEED ${i}..." autocomplete="off" />
+              <button id="feed-search-btn-${i}" class="search-btn" type="button">Search</button>
+            </div>
+            <div id="autocomplete-list-${i}" class="autocomplete-list"></div>
+          </div>
+
+          <div class="feed-help">
+            Only visible feeds are initialized. ADSBx only queries when its toggle is on.
+          </div>
+
+          <div id="location-list-${i}" class="location-list"></div>
+        `;
+        grid.appendChild(card);
+      }
+    }
+
+    function buildJsonFeedCards() {
+      const wrap = document.getElementById("json-feeds");
+      if (!wrap) return;
+
+      wrap.innerHTML = "";
+      for (let i = 2; i <= MAX_FEEDS; i++) {
+        const card = document.createElement("div");
+        card.className = "json-feed-card";
+        card.setAttribute("data-feed", String(i));
+        card.innerHTML = `
+          <div class="json-feed-top">
+            <div class="json-feed-title">DATA FEED ${i}</div>
+            <button class="small-btn add-feed" type="button">Refresh</button>
+          </div>
+          <div class="feed-content">Loading…</div>
+          <div class="feed-desc">Description for FEED ${i}.</div>
+        `;
+        wrap.appendChild(card);
+      }
+    }
+
     function wireFeedSearch(feedId) {
       const state = getFeedState(feedId);
       const root = getFeedRoot(feedId);
@@ -1738,8 +1825,9 @@ HTML_PAGE = """<!doctype html>
       const btn = document.getElementById("feed-search-btn-" + feedId);
       const popBtn = document.getElementById("feed-popout-btn-" + feedId);
       const resetBtn = document.getElementById("feed-reset-btn-" + feedId);
+      const adsbxBtn = document.getElementById("feed-adsbx-btn-" + feedId);
 
-      if (!root || !input || !btn || !popBtn || !resetBtn) return;
+      if (!root || !input || !btn || !popBtn || !resetBtn || !adsbxBtn) return;
 
       input.addEventListener("input", () => {
         updateSearchUI(feedId, input.value);
@@ -1798,86 +1886,23 @@ HTML_PAGE = """<!doctype html>
         }).catch(console.error);
       });
 
+      adsbxBtn.addEventListener("click", async () => {
+        const next = !state.adsbxEnabled;
+        if (next) await ensureFeedViewer(feedId);
+        setAdsbxEnabled(feedId, next);
+      });
+
       document.addEventListener("click", (e) => {
-        if (!root.contains(e.target)) {
-          hideDropdown(feedId);
-        }
+        if (!root.contains(e.target)) hideDropdown(feedId);
       });
 
       renderLocationGrid(feedId, IMPORTANT_LOCATIONS);
     }
 
-    function buildFeedCards() {
-      const grid = document.getElementById("feeds-grid");
-      if (!grid) return;
-
-      grid.innerHTML = "";
-
-      for (let i = 1; i <= MAX_FEEDS; i++) {
-        const card = document.createElement("section");
-        card.className = "feed-card";
-        card.setAttribute("data-feed", String(i));
-
-        card.innerHTML = `
-          <div class="feed-top">
-            <div class="feed-title">FEED ${i}</div>
-            <div class="feed-actions">
-              <button id="feed-reset-btn-${i}" class="small-btn" type="button">Reset</button>
-              <button id="feed-popout-btn-${i}" class="small-btn" type="button">Pop out</button>
-            </div>
-          </div>
-
-          <div class="viewer-frame">
-            <div id="viewer-label-${i}" class="viewer-label">FEED ${i}</div>
-            <div id="viewer-container-${i}" class="viewer-container"></div>
-          </div>
-
-          <div class="feed-search-wrap">
-            <div class="feed-search-row">
-              <input id="feed-search-input-${i}" class="feed-search-input" type="text" placeholder="Search any location for FEED ${i}..." autocomplete="off" />
-              <button id="feed-search-btn-${i}" class="search-btn" type="button">Search</button>
-            </div>
-            <div id="autocomplete-list-${i}" class="autocomplete-list"></div>
-          </div>
-
-          <div class="feed-help">
-            Only visible feeds are initialized. This avoids GPU/WebGL crashes at high feed counts.
-          </div>
-
-          <div id="location-list-${i}" class="location-list"></div>
-        `;
-
-        grid.appendChild(card);
-      }
-    }
-
-    function setGridColumns(activeCount) {
-      const grid = document.getElementById("feeds-grid");
-      if (!grid) return;
-
-      grid.classList.remove("cols-1", "cols-2", "cols-3");
-
-      if (activeCount <= 1) grid.classList.add("cols-1");
-      else if (activeCount <= 4) grid.classList.add("cols-2");
-      else grid.classList.add("cols-3");
-    }
-
-    function setActiveFeedCount(count) {
-      const n = Math.max(1, Math.min(MAX_FEEDS, Number(count) || 1));
-      const input = document.getElementById("feed-count-input");
-      if (input) input.value = String(n);
-
-      document.querySelectorAll(".feed-card").forEach(card => {
-        const feedId = Number(card.getAttribute("data-feed"));
-        card.classList.toggle("hidden", feedId > n);
-      });
-
-      setGridColumns(n);
-      syncVisibleFeedViewers(n);
-    }
-
-    window.addEventListener("DOMContentLoaded", async () => {
+    window.addEventListener("DOMContentLoaded", () => {
       buildFeedCards();
+      buildJsonFeedCards();
+
       wireFeedCountControls();
 
       for (let i = 1; i <= MAX_FEEDS; i++) {
@@ -1905,7 +1930,7 @@ HTML_PAGE = """<!doctype html>
   <div class="wrap">
     <div class="header">
       <h1>UROPS PANOPT | Home</h1>
-      <div class="sub">Up to 33 feeds, lazy-initialized to avoid WebGL shader/runtime failures.</div>
+      <div class="sub">Up to 33 feeds, lazy-initialized to avoid GPU/WebGL failures. ADSBx overlay is opt-in per feed.</div>
     </div>
 
     <div class="topbar">
@@ -1957,19 +1982,7 @@ HTML_PAGE = """<!doctype html>
       </div>
     </div>
 
-    <div class="json-feeds">
-      ${''.join([
-        f'''
-      <div class="json-feed-card" data-feed="{i}">
-        <div class="json-feed-top">
-          <div class="json-feed-title">DATA FEED {i}</div>
-          <button class="small-btn add-feed" type="button">Refresh</button>
-        </div>
-        <div class="feed-content">Loading…</div>
-        <div class="feed-desc">Description for FEED {i}.</div>
-      </div>''' for i in range(2, 34)
-      ])}
-    </div>
+    <div id="json-feeds" class="json-feeds"></div>
   </div>
 </body>
 </html>
