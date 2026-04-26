@@ -1,0 +1,19 @@
+MILESTONES:
+-----
+
+
+04/26/2026 - Sunday:
+-----
+- First prototype version.
+
+
+Previously Added:
+-----
+- Cesium and 3D Maps Google Tiles.
+- City names / Country names.
+- Auto-complete.
+- Coordinates label.
+- Context menu / Enter coordinates / Enter names.
+- Multiple Active Feeds.
+- Pop-out Active Feeds.
+- Names register / Priority names.
