@@ -122,6 +122,12 @@ HTML_PAGE = """<!doctype html>
       border-radius: 8px;
     }
 
+    .coord-box.editing {
+      outline: 2px solid #22c55e;
+      cursor: text;
+      min-width: 260px;
+    }
+
     .btn:hover, .small-btn:hover, .search-btn:hover {
       background: var(--btnHover);
     }
@@ -140,6 +146,51 @@ HTML_PAGE = """<!doctype html>
     .btn {
       height: 38px;
       padding: 0 12px;
+    }
+
+    .context-menu {
+      position: fixed;
+      z-index: 9999;
+      min-width: 240px;
+      background: #05070a;
+      border: 1px solid #2a3142;
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.55);
+      overflow: hidden;
+      display: none;
+    }
+
+    .context-menu.open {
+      display: block;
+    }
+
+    .context-menu-top {
+      padding: 6px;
+      border-bottom: 1px solid #2a3142;
+    }
+
+    .context-menu-command {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: white;
+      padding: 10px 12px;
+      text-align: left;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .context-menu-command:hover {
+      background: #1d2434;
+    }
+
+    .context-menu-bottom {
+      padding: 8px 12px 10px;
+      color: #22c55e;
+      font-size: 10px;
+      line-height: 1.35;
     }
 
     .feeds-grid {
@@ -208,6 +259,27 @@ HTML_PAGE = """<!doctype html>
       pointer-events: none;
     }
 
+    .coord-box {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      z-index: 6;
+      padding: 7px 10px;
+      border-radius: 10px;
+      background: white;
+      color: black;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .coord-box:hover {
+      background: #f1f5f9;
+    }
+    
     .viewer-container {
       width: 100%;
       height: 100%;
@@ -719,6 +791,79 @@ HTML_PAGE = """<!doctype html>
         const btn = panel.querySelector(".add-feed");
         if (btn) btn.addEventListener("click", () => loadJsonFeed(n));
       });
+    }
+
+    let PANOPT_CONTEXT = {
+      type: null,
+      feedId: null,
+      coords: null
+    };
+
+    function getContextMenu() {
+      return document.getElementById("panopt-context-menu");
+    }
+
+    function hideContextMenu() {
+      const menu = getContextMenu();
+      if (menu) menu.classList.remove("open");
+    }
+
+    function showContextMenu(x, y, context) {
+      const menu = getContextMenu();
+      if (!menu) return;
+
+      PANOPT_CONTEXT = context;
+
+      menu.style.left = x + "px";
+      menu.style.top = y + "px";
+      menu.classList.add("open");
+
+      const rect = menu.getBoundingClientRect();
+
+      if (rect.right > window.innerWidth) {
+        menu.style.left = Math.max(8, window.innerWidth - rect.width - 8) + "px";
+      }
+
+      if (rect.bottom > window.innerHeight) {
+        menu.style.top = Math.max(8, window.innerHeight - rect.height - 8) + "px";
+      }
+    }
+
+    function openContextGoogleMaps() {
+      const coords = PANOPT_CONTEXT.coords;
+      if (!coords) return;
+
+      const lat = Number(coords.lat);
+      const lon = Number(coords.lon);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lat + "," + lon)}`;
+      window.open(url, "_blank", "noopener,noreferrer");
+
+      hideContextMenu();
+    }
+
+    function wireGlobalContextMenu() {
+      const googleBtn = document.getElementById("ctx-google-maps");
+      if (googleBtn) {
+        googleBtn.addEventListener("click", openContextGoogleMaps);
+      }
+
+      const enterBtn = document.getElementById("ctx-enter-location");
+      if (enterBtn) {
+        enterBtn.addEventListener("click", openContextEnterLocation);
+      }
+
+      document.addEventListener("click", () => {
+        hideContextMenu();
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") hideContextMenu();
+      });
+
+      window.addEventListener("blur", hideContextMenu);
     }
 
     function wireGridButtons() {
@@ -1469,6 +1614,9 @@ HTML_PAGE = """<!doctype html>
         viewer.scene.primitives.add(tileset);
 
         state.viewer = viewer;
+        updateCoordBox(feedId);
+        viewer.camera.changed.addEventListener(() => updateCoordBox(feedId));
+        viewer.scene.postRender.addEventListener(() => updateCoordBox(feedId));
         state.tileset = tileset;
         state.isInitialized = true;
         state.isInitializing = false;
@@ -1776,6 +1924,7 @@ HTML_PAGE = """<!doctype html>
 
           <div class="viewer-frame">
             <div id="viewer-label-${i}" class="viewer-label">FEED ${i}</div>
+            <div id="coord-box-${i}" class="coord-box" title="Click to copy coordinates">Lat: --, Lon: --</div>
             <div id="viewer-container-${i}" class="viewer-container"></div>
           </div>
 
@@ -1816,6 +1965,210 @@ HTML_PAGE = """<!doctype html>
         `;
         wrap.appendChild(card);
       }
+    }
+
+    function getCoordBox(feedId) {
+      return document.getElementById("coord-box-" + feedId);
+    }
+
+    function updateCoordBox(feedId) {
+      const state = getFeedState(feedId);
+      const viewer = state.viewer;
+      const box = getCoordBox(feedId);
+
+      if (!viewer || !box) return;
+      if (box.contentEditable === "true") return;
+
+      const carto = viewer.camera.positionCartographic;
+      if (!carto) return;
+
+      const lat = Cesium.Math.toDegrees(carto.latitude);
+      const lon = Cesium.Math.toDegrees(carto.longitude);
+      const height = carto.height;
+
+      box.textContent =
+        `Lat: ${lat.toFixed(6)}, Lon: ${lon.toFixed(6)}, Alt: ${Math.round(height)}m`;
+
+      box.dataset.lat = lat.toFixed(6);
+      box.dataset.lon = lon.toFixed(6);
+      box.dataset.coords = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+    }
+
+    function wireCoordBox(feedId) {
+      const box = getCoordBox(feedId);
+      if (!box) return;
+
+      box.addEventListener("click", async () => {
+        if (box.contentEditable === "true") return;
+
+        const text = box.dataset.coords || box.textContent || "";
+        try {
+          await navigator.clipboard.writeText(text);
+          const old = box.textContent;
+          box.textContent = "Copied";
+          setTimeout(() => {
+            box.textContent = old;
+          }, 700);
+        } catch (e) {
+          console.error("Clipboard copy failed:", e);
+        }
+      });
+
+      box.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        beginCoordBoxEdit(feedId);
+      });
+
+      box.addEventListener("keydown", async (e) => {
+        if (box.contentEditable !== "true") return;
+
+        if (e.key === "Enter") {
+          e.preventDefault();
+          await finishCoordBoxEdit(feedId);
+          return;
+        }
+
+        if (e.key === "Tab") {
+          e.preventDefault();
+          await autocompleteCoordBoxEdit(feedId);
+          return;
+        }
+
+        if (e.key === "Escape") {
+          e.preventDefault();
+          box.contentEditable = "false";
+          box.classList.remove("editing");
+          box.textContent = box.dataset.oldText || "Lat: --, Lon: --";
+        }
+      });
+
+      box.addEventListener("blur", () => {
+        if (box.contentEditable === "true") {
+          finishCoordBoxEdit(feedId).catch(console.error);
+        }
+      });
+
+      box.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        showContextMenu(e.clientX, e.clientY, {
+          type: "coord-box",
+          feedId,
+          coords: {
+            lat: box.dataset.lat,
+            lon: box.dataset.lon
+          }
+        });
+      });
+    }
+
+    function parseCoordinateText(text) {
+      const raw = String(text || "").trim();
+
+      const match = raw.match(/(-?\\d+(?:\\.\\d+)?)\\s*[, ]+\\s*(-?\\d+(?:\\.\\d+)?)/);
+      if (!match) return null;
+
+      const lat = Number(match[1]);
+      const lon = Number(match[2]);
+
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+
+      return {
+        name: "Custom coordinates",
+        country: "",
+        lat,
+        lon,
+        height: 2200,
+        heading: 20,
+        pitch: -45
+      };
+    }
+
+    function beginCoordBoxEdit(feedId) {
+      const box = getCoordBox(feedId);
+      if (!box) return;
+
+      hideContextMenu();
+
+      box.contentEditable = "true";
+      box.classList.add("editing");
+      box.dataset.oldText = box.textContent || "";
+
+      box.textContent = "";
+      box.focus();
+
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    async function finishCoordBoxEdit(feedId) {
+      const box = getCoordBox(feedId);
+      if (!box || box.contentEditable !== "true") return;
+
+      const text = String(box.textContent || "").trim();
+
+      box.contentEditable = "false";
+      box.classList.remove("editing");
+
+      if (!text) {
+        box.textContent = box.dataset.oldText || "Lat: --, Lon: --";
+        return;
+      }
+
+      const coords = parseCoordinateText(text);
+      if (coords) {
+        await ensureFeedViewer(feedId);
+        flyToLocation(feedId, coords);
+        return;
+      }
+
+      const results = await buildSearchResults(text);
+      const best = results.dropdown[0] || results.grid[0];
+
+      if (best) {
+        box.textContent = best.country ? `${best.name}, ${best.country}` : best.name;
+        await ensureFeedViewer(feedId);
+        flyToLocation(feedId, best);
+      } else {
+        box.textContent = box.dataset.oldText || "Location not found";
+      }
+    }
+
+    async function autocompleteCoordBoxEdit(feedId) {
+      const box = getCoordBox(feedId);
+      if (!box || box.contentEditable !== "true") return;
+
+      const text = String(box.textContent || "").trim();
+      if (!text) return;
+
+      const coords = parseCoordinateText(text);
+      if (coords) return;
+
+      const results = await buildSearchResults(text);
+      const best = results.dropdown[0] || results.grid[0];
+
+      if (best) {
+        box.textContent = best.country ? `${best.name}, ${best.country}` : best.name;
+
+        const range = document.createRange();
+        range.selectNodeContents(box);
+        range.collapse(false);
+
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+
+    function openContextEnterLocation() {
+      if (!PANOPT_CONTEXT || PANOPT_CONTEXT.feedId == null) return;
+      beginCoordBoxEdit(PANOPT_CONTEXT.feedId);
     }
 
     function wireFeedSearch(feedId) {
@@ -1895,17 +2248,19 @@ HTML_PAGE = """<!doctype html>
       document.addEventListener("click", (e) => {
         if (!root.contains(e.target)) hideDropdown(feedId);
       });
-
+      
+      wireCoordBox(feedId);
       renderLocationGrid(feedId, IMPORTANT_LOCATIONS);
     }
 
     window.addEventListener("DOMContentLoaded", () => {
       buildFeedCards();
       buildJsonFeedCards();
-
+      
+      wireGlobalContextMenu();
       wireFeedCountControls();
 
-      for (let i = 1; i <= MAX_FEEDS; i++) {
+            for (let i = 1; i <= MAX_FEEDS; i++) {
         wireFeedSearch(i);
       }
 
@@ -1983,6 +2338,19 @@ HTML_PAGE = """<!doctype html>
     </div>
 
     <div id="json-feeds" class="json-feeds"></div>
+  </div>
+  <div id="panopt-context-menu" class="context-menu">
+    <div class="context-menu-top">
+      <button id="ctx-google-maps" class="context-menu-command" type="button">
+        Open coordinates in Google Maps
+      </button>
+      <button id="ctx-enter-location" class="context-menu-command" type="button">
+        Enter coordinates or place
+      </button>
+    </div>
+    <div id="ctx-description" class="context-menu-bottom">
+      Opens the selected coordinate location in your browser.
+    </div>
   </div>
 </body>
 </html>
